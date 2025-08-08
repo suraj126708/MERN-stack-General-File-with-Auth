@@ -1,111 +1,154 @@
-// routes/adminRoutes.js
+// Enhanced routes with RBAC - routes/adminRoutes.js
 import express from "express";
-import { body, param, query } from "express-validator";
+import { body, param } from "express-validator";
 import {
   getAllUsers,
   getUserById,
   updateUserRole,
   updateUserStatus,
   deleteUser,
-  getSystemStats,
-  getAdminDashboard,
-  bulkUpdateUsers,
-  exportUsers,
+  getUserStats,
+  promoteToAdmin,
+  demoteFromAdmin,
+  bulkUpdateRoles,
 } from "../controllers/adminController.js";
 import {
   authenticateFirebaseToken,
   authorize,
   checkPermissions,
-} from "../middleware/authMiddleware.js";
+  authorizeMultiple,
+} from "../middlewares/authMiddleware.js";
 
 const router = express.Router();
 
 // Validation middleware
-const updateRoleValidation = [
-  body("role")
-    .isIn(["user", "moderator", "admin"])
-    .withMessage("Role must be user, moderator, or admin"),
-  body("reason")
-    .optional()
-    .isLength({ max: 500 })
-    .withMessage("Reason must not exceed 500 characters"),
+const userIdValidation = [
+  param("id")
+    .notEmpty()
+    .withMessage("User ID is required")
+    .isLength({ min: 1 })
+    .withMessage("Invalid user ID format"),
 ];
 
-const updateStatusValidation = [
+const roleValidation = [
+  body("role")
+    .notEmpty()
+    .withMessage("Role is required")
+    .isIn(["user", "admin", "moderator", "editor"])
+    .withMessage("Role must be user, admin, moderator, or editor"),
+];
+
+const statusValidation = [
   body("status")
+    .notEmpty()
+    .withMessage("Status is required")
     .isIn(["active", "inactive", "suspended", "pending"])
     .withMessage("Status must be active, inactive, suspended, or pending"),
-  body("reason")
-    .optional()
-    .isLength({ max: 500 })
-    .withMessage("Reason must not exceed 500 characters"),
 ];
 
-const bulkUpdateValidation = [
+const bulkRoleValidation = [
   body("userIds")
     .isArray({ min: 1 })
-    .withMessage("User IDs must be an array with at least one element"),
-  body("updates").isObject().withMessage("Updates must be an object"),
+    .withMessage("User IDs must be a non-empty array"),
+  body("role")
+    .isIn(["user", "admin", "moderator", "editor"])
+    .withMessage("Invalid role"),
 ];
 
-// All admin routes require admin role
-router.use(authenticateFirebaseToken, authorize("admin"));
+// 🔥 RBAC Protected Routes
 
-// @route   GET /api/admin/dashboard
-// @desc    Get admin dashboard data
-// @access  Private (Admin)
-router.get("/dashboard", getAdminDashboard);
-
-// @route   GET /api/admin/stats
-// @desc    Get system statistics
-// @access  Private (Admin)
-router.get("/stats", getSystemStats);
-
-// @route   GET /api/admin/users
-// @desc    Get all users with advanced filtering (Admin only)
+// @route   GET /api/admin/users/stats
+// @desc    Get user statistics (Admin only)
 // @access  Private (Admin)
 router.get(
+  "/users/stats",
+  authenticateFirebaseToken,
+  authorize("admin"),
+  getUserStats
+);
+
+// @route   GET /api/admin/users
+// @desc    Get all users with pagination and filtering
+// @access  Private (Admin, Moderator with read permission)
+router.get(
   "/users",
-  [
-    query("page").optional().isInt({ min: 1 }),
-    query("limit").optional().isInt({ min: 1, max: 100 }),
-    query("role").optional().isIn(["user", "moderator", "admin"]),
-    query("status")
-      .optional()
-      .isIn(["active", "inactive", "suspended", "pending"]),
-    query("search").optional().isLength({ min: 1, max: 100 }),
-    query("sortBy")
-      .optional()
-      .isIn(["createdAt", "lastActiveAt", "email", "role"]),
-    query("sortOrder").optional().isIn(["asc", "desc"]),
-  ],
+  authenticateFirebaseToken,
+  authorizeMultiple({
+    admin: true,
+    moderator: ["read"],
+  }),
   getAllUsers
 );
 
 // @route   GET /api/admin/users/:id
-// @desc    Get user by ID (Admin only)
-// @access  Private (Admin)
+// @desc    Get user by ID
+// @access  Private (Admin, Moderator)
 router.get(
   "/users/:id",
-  [param("id").notEmpty().withMessage("User ID is required")],
+  authenticateFirebaseToken,
+  authorize("admin", "moderator"),
+  userIdValidation,
   getUserById
 );
 
 // @route   PUT /api/admin/users/:id/role
 // @desc    Update user role (Admin only)
 // @access  Private (Admin)
-router.put("/users/:id/role", updateUserRole);
+router.put(
+  "/users/:id/role",
+  authenticateFirebaseToken,
+  checkPermissions("manage_roles"),
+  userIdValidation,
+  roleValidation,
+  updateUserRole
+);
 
 // @route   PUT /api/admin/users/:id/status
-// @desc    Update user status (Admin only)
-// @access  Private (Admin)
+// @desc    Update user status
+// @access  Private (Admin, Moderator with manage_users permission)
 router.put(
   "/users/:id/status",
-  [
-    param("id").notEmpty().withMessage("User ID is required"),
-    ...updateStatusValidation,
-  ],
+  authenticateFirebaseToken,
+  authorizeMultiple({
+    admin: true,
+    moderator: ["manage_users"],
+  }),
+  userIdValidation,
+  statusValidation,
   updateUserStatus
+);
+
+// @route   POST /api/admin/users/:id/promote
+// @desc    Promote user to admin (Super Admin only)
+// @access  Private (Admin with manage_roles permission)
+router.post(
+  "/users/:id/promote",
+  authenticateFirebaseToken,
+  checkPermissions("manage_roles"),
+  userIdValidation,
+  promoteToAdmin
+);
+
+// @route   POST /api/admin/users/:id/demote
+// @desc    Demote admin to user (Super Admin only)
+// @access  Private (Admin with manage_roles permission)
+router.post(
+  "/users/:id/demote",
+  authenticateFirebaseToken,
+  checkPermissions("manage_roles"),
+  userIdValidation,
+  demoteFromAdmin
+);
+
+// @route   PUT /api/admin/users/bulk-role
+// @desc    Bulk update user roles (Admin only)
+// @access  Private (Admin)
+router.put(
+  "/users/bulk-role",
+  authenticateFirebaseToken,
+  authorize("admin"),
+  bulkRoleValidation,
+  bulkUpdateRoles
 );
 
 // @route   DELETE /api/admin/users/:id
@@ -113,28 +156,10 @@ router.put(
 // @access  Private (Admin)
 router.delete(
   "/users/:id",
-  [param("id").notEmpty().withMessage("User ID is required")],
+  authenticateFirebaseToken,
+  authorize("admin"),
+  userIdValidation,
   deleteUser
-);
-
-// @route   POST /api/admin/users/bulk-update
-// @desc    Bulk update users (Admin only)
-// @access  Private (Admin)
-router.post("/users/bulk-update", bulkUpdateValidation, bulkUpdateUsers);
-
-// @route   GET /api/admin/users/export
-// @desc    Export users data (Admin only)
-// @access  Private (Admin)
-router.get(
-  "/users/export",
-  [
-    query("format").optional().isIn(["csv", "json"]),
-    query("role").optional().isIn(["user", "moderator", "admin"]),
-    query("status")
-      .optional()
-      .isIn(["active", "inactive", "suspended", "pending"]),
-  ],
-  exportUsers
 );
 
 export default router;
